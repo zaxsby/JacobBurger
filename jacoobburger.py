@@ -1,14 +1,16 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog, font, simpledialog
 import datetime
 import os
 import json
-import ttkthemes  # For better themes
-from ttkbootstrap import Style  # For modern Bootstrap-like styling
+import matplotlib
+# Use Agg backend for better performance
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # For visualizing consumption
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import customtkinter as ctk  # Modern UI elements
 import calendar  # Standard Python calendar module
+import sv_ttk  # Import sv-ttk instead of ttkbootstrap
 
 class BurgerTracker:
     def __init__(self, root):
@@ -25,22 +27,51 @@ class BurgerTracker:
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
         
-        # Add window resize event handler
+        # File paths
+        self.data_file = "burger_tracker_data.json"
+        self.custom_food_db = "custom_food_database.json"
+        self.custom_exercise_db = "custom_exercise_database.json"
+        
+        # Initialize variables
+        self.current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        self.today_entries = {"food": [], "exercise": [], "water": []}
+        self.kyle_tax_enabled = tk.BooleanVar(value=False)
+        self.date_var = tk.StringVar(value=self.current_date)
+        self.goal_var = tk.StringVar(value="2000")
+        self.weight_var = tk.StringVar(value="")
+        self.water_progress_var = tk.DoubleVar(value=0)
+        self.daily_water_goal = tk.StringVar(value="8")
+        self.progress_var = tk.DoubleVar(value=0)
+        self.total_var = tk.StringVar(value="Total Calories: 0")
+        self.burnt_var = tk.StringVar(value="Calories Burnt: 0")
+        self.net_var = tk.StringVar(value="Net Calories: 0")
+        self.remaining_var = tk.StringVar(value="Remaining: 0")
+        self.total_exercise_var = tk.StringVar(value="Total Exercise Time: 0 minutes")
+        self.total_burnt_var = tk.StringVar(value="Total Calories Burnt: 0")
+        self.status_var = tk.StringVar(value="Ready")
+        
+        # Add window resize event handler with debouncing
+        self.resize_timer = None
         self.root.bind("<Configure>", self.on_window_resize)
         
-        # Apply modern theme
-        self.style = Style(theme="superhero")
+        # Initialize theme settings once
+        self._initialize_theme()
         
         # Configure global styling
-        self.style.configure("TButton", font=("Roboto", 10))
-        self.style.configure("TLabel", font=("Roboto", 10))
-        self.style.configure("TFrame", background="#2b3e50")
+        self.configure_styles()
         
         # App version
-        self.app_version = "1.5"  # Updated version number for calendar feature
+        self.app_version = "1.7"  # Updated version number for sv-ttk UI update
+        
+        # Theme names for menu
+        self.theme_names = ["light", "dark"]
+        
+        # Load history data
+        self.history = self.load_history()
+        self.today_entries = self.history.get(self.current_date, {"food": [], "exercise": [], "weight": None, "water": []})
         
         # ASCII art for the app
-        self.ascii_art = """
+        self.ascii_art = r"""
               _                          _                 
              | |   __ _    ___    ___   | |__              
           _  | |  / _` |  / __|  / _ \  | '_ \             
@@ -117,18 +148,6 @@ class BurgerTracker:
         # Load custom databases if they exist
         self.load_custom_databases()
         
-        # History by date
-        self.history = self.load_history()
-        
-        # Today's date string
-        self.current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        
-        # Today's entries
-        self.today_entries = self.history.get(self.current_date, {"food": [], "exercise": [], "weight": None})
-        
-        # Kyle Tax enabled flag
-        self.kyle_tax_enabled = tk.BooleanVar(value=False)
-        
         # Create menu
         self.create_menu()
         
@@ -171,9 +190,10 @@ class BurgerTracker:
         self.stats_tab = ttk.Frame(self.notebook)
         self.exercise_tab = ttk.Frame(self.notebook)  # New tab for exercise tracking
         self.weight_tab = ttk.Frame(self.notebook)  # New tab for weight tracking
+        self.water_tab = ttk.Frame(self.notebook)  # New tab for water tracking
         
         # Configure tab frames for responsive behavior
-        for tab in [self.tracking_tab, self.stats_tab, self.exercise_tab, self.weight_tab]:
+        for tab in [self.tracking_tab, self.stats_tab, self.exercise_tab, self.weight_tab, self.water_tab]:
             for i in range(5):  # Generous number of columns
                 tab.columnconfigure(i, weight=1)
             for i in range(5):  # Generous number of rows
@@ -182,6 +202,7 @@ class BurgerTracker:
         self.notebook.add(self.tracking_tab, text="Daily Tracking")
         self.notebook.add(self.exercise_tab, text="Exercise Log")  # New exercise tab
         self.notebook.add(self.weight_tab, text="Weight Tracker")  # New weight tracking tab
+        self.notebook.add(self.water_tab, text="Water Tracker")  # New water tracking tab
         self.notebook.add(self.stats_tab, text="Statistics")
         
         # Setup tracking tab
@@ -192,6 +213,9 @@ class BurgerTracker:
         
         # Setup weight tracking tab
         self.setup_weight_tab()
+        
+        # Setup water tracking tab
+        self.setup_water_tab()
         
         # Setup stats tab
         self.setup_stats_tab()
@@ -204,13 +228,19 @@ class BurgerTracker:
         status_bar = ttk.Frame(self.main_frame)
         status_bar.pack(fill=tk.X, pady=5)
         
-        self.status_var = tk.StringVar(value="Ready")
         status_label = ttk.Label(status_bar, textvariable=self.status_var, anchor=tk.W)
         status_label.pack(side=tk.LEFT, padx=10)
         
         # Version info
         version_label = ttk.Label(status_bar, text=f"v{self.app_version}", anchor=tk.E)  # Updated version number
         version_label.pack(side=tk.RIGHT, padx=10)
+    
+    def configure_styles(self):
+        """Configure global styles once instead of repeatedly"""
+        style = ttk.Style()
+        style.configure("TButton", font=("Segoe UI", 10))
+        style.configure("TLabel", font=("Segoe UI", 10))
+        style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
     
     def setup_tracking_tab(self):
         # Upper section with date and goal controls
@@ -299,13 +329,16 @@ class BurgerTracker:
             command=self.apply_kyle_tax
         ).pack(side=tk.LEFT, padx=5)
         
+        # Add separator between upper controls and food log
+        ttk.Separator(self.tracking_tab, orient='horizontal').pack(fill='x', padx=10, pady=5)
+        
         # Create the food log frame
         log_frame = ttk.LabelFrame(self.tracking_tab, text="Food Log")  # Changed from "Burger Log" to "Food Log"
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Create treeview for food entries
         columns = ("Food", "Quantity", "Category", "Calories", "Kyle Tax")  # Added Category column
-        self.tree = ttk.Treeview(log_frame, columns=columns, show="headings", style="Treeview")
+        self.tree = ttk.Treeview(log_frame, columns=columns, show="headings")
         
         # Define headings
         for col in columns:
@@ -357,6 +390,9 @@ class BurgerTracker:
             style="Info.TButton",
             command=self.save_history
         ).pack(side="right", padx=5)
+        
+        # Add separator between buttons and progress section
+        ttk.Separator(self.tracking_tab, orient='horizontal').pack(fill='x', padx=10, pady=5)
         
         # Progress frame
         progress_frame = ttk.Frame(self.tracking_tab)
@@ -469,13 +505,16 @@ class BurgerTracker:
             command=lambda: self.change_date(1)
         ).pack(side=tk.LEFT)
         
+        # Add separator between date controls and exercise log
+        ttk.Separator(exercise_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
         # Exercise log
         log_frame = ttk.LabelFrame(exercise_frame, text="Exercise Log")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=10)
         
         # Create treeview for exercise entries
         columns = ("Exercise", "Duration (min)", "Calories Burnt")
-        self.exercise_tree = ttk.Treeview(log_frame, columns=columns, show="headings", style="Treeview")
+        self.exercise_tree = ttk.Treeview(log_frame, columns=columns, show="headings")
         
         # Define headings
         for col in columns:
@@ -518,6 +557,9 @@ class BurgerTracker:
             command=self.clear_all_exercises
         ).pack(side="left", padx=5)
         
+        # Add separator between buttons and summary
+        ttk.Separator(exercise_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
         # Summary frame
         summary_frame = ttk.Frame(exercise_frame)
         summary_frame.pack(fill="x", padx=5, pady=10)
@@ -537,7 +579,7 @@ class BurgerTracker:
             font=("Roboto", 12, "bold"),
             foreground="#5cb85c"  # Green color for burnt calories
         ).pack(side="right", padx=20)
-        
+    
     def setup_weight_tab(self):
         # Weight tracking tab main container
         weight_frame = ttk.Frame(self.weight_tab)
@@ -594,6 +636,9 @@ class BurgerTracker:
             command=lambda: self.change_date(1)
         ).pack(side=tk.LEFT)
         
+        # Add separator between date controls and weight entry
+        ttk.Separator(weight_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
         # Current weight entry section
         current_weight_frame = ttk.LabelFrame(weight_frame, text="Enter Today's Weight")
         current_weight_frame.pack(fill=tk.X, padx=5, pady=10)
@@ -614,13 +659,16 @@ class BurgerTracker:
             command=self.save_weight
         ).pack(side=tk.LEFT, padx=5)
         
+        # Add separator between weight entry and history
+        ttk.Separator(weight_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
         # History section
         history_frame = ttk.LabelFrame(weight_frame, text="Weight History")
         history_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=10)
         
         # Create treeview for weight entries
         columns = ("Date", "Weight (lb)")
-        self.weight_tree = ttk.Treeview(history_frame, columns=columns, show="headings", style="Treeview")
+        self.weight_tree = ttk.Treeview(history_frame, columns=columns, show="headings")
         
         # Define headings
         for col in columns:
@@ -658,33 +706,26 @@ class BurgerTracker:
         self.load_weight_history()
     
     def load_weight_history(self):
+        """Optimize loading weight history"""
         # Clear the weight treeview
         for item in self.weight_tree.get_children():
             self.weight_tree.delete(item)
+            
+        # Batch update
+        self.weight_tree.update_idletasks()
         
-        # Load weight history from all dates
+        # Get all weight entries from history
         weights = []
         for date, data in self.history.items():
-            weight = data.get("weight")
-            if weight is not None:
-                weights.append((date, weight))
-        
-        # Sort by date (newest first)
+            if "weight" in data:
+                weights.append((date, data["weight"]))
+                
+        # Sort by date (most recent first)
         weights.sort(reverse=True)
         
-        # Add to treeview
+        # Add entries to weight treeview
         for date, weight in weights:
             self.weight_tree.insert("", "end", values=(date, weight))
-        
-        # Load current date's weight if it exists
-        selected_date = self.date_var.get()
-        day_data = self.get_day_data(selected_date)
-        current_weight = day_data.get("weight")
-        
-        if current_weight is not None:
-            self.weight_var.set(str(current_weight))
-        else:
-            self.weight_var.set("")
     
     def save_weight(self):
         # Get the weight value
@@ -820,96 +861,106 @@ class BurgerTracker:
     
     def setup_stats_tab(self):
         # Create frames for stats display
-        chart_frame = ttk.Frame(self.stats_tab)
-        chart_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        stats_frame = ttk.Frame(self.stats_tab)
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        control_frame = ttk.Frame(chart_frame)
-        control_frame.pack(fill=tk.X, pady=5)
+        # Chart options
+        options_frame = ttk.LabelFrame(stats_frame, text="Chart Options")
+        options_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(control_frame, text="Select Chart:").pack(side=tk.LEFT, padx=5)
+        self.chart_type = tk.StringVar(value="weekly")
         
-        chart_options = ["Weekly Calories", "Daily Distribution", "Food Types", "Calories In vs Out", "Weight Tracking"]  # Added weight tracking chart
-        self.chart_var = tk.StringVar(value=chart_options[0])
+        charts = [
+            ("Weekly Calories", "weekly"),
+            ("Food Distribution", "distribution"),
+            ("Food Types", "food_types"),
+            ("Calories In/Out", "calories_io"),
+            ("Weight Tracking", "weight"),
+            ("Water Intake", "water")  # New water tracking chart option
+        ]
         
-        chart_combo = ttk.Combobox(
-            control_frame, 
-            textvariable=self.chart_var, 
-            values=chart_options, 
-            state="readonly",
-            width=20
-        )
-        chart_combo.pack(side=tk.LEFT, padx=5)
+        for i, (text, value) in enumerate(charts):
+            ttk.Radiobutton(
+                options_frame, 
+                text=text, 
+                value=value, 
+                variable=self.chart_type,
+                command=self.generate_chart
+            ).grid(row=i // 3, column=i % 3, padx=10, pady=5, sticky="w")
         
-        ttk.Button(
-            control_frame,
-            text="Generate Chart",
-            style="Info.TButton",
-            command=self.generate_chart
-        ).pack(side=tk.LEFT, padx=5)
-        
-        # Frame for the chart
-        self.figure_frame = ttk.Frame(chart_frame)
-        self.figure_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Chart frame
+        self.chart_frame = ttk.Frame(stats_frame)
+        self.chart_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Summary stats
-        summary_frame = ttk.LabelFrame(self.stats_tab, text="Summary Statistics")
-        summary_frame.pack(fill=tk.X, padx=10, pady=10)
+        summary_frame = ttk.LabelFrame(stats_frame, text="Summary Statistics")
+        summary_frame.pack(fill=tk.X, padx=5, pady=10)
         
         self.stats_text = tk.Text(summary_frame, height=6, width=40, wrap=tk.WORD)
         self.stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.stats_text.config(state=tk.DISABLED)
+        
+        # Generate chart on startup
+        self.generate_chart()
     
     def create_menu(self):
         # Create a menu bar
         menu_bar = tk.Menu(self.root)
-        self.root.config(menu=menu_bar)
         
-        # Create File menu
+        # Add File menu
         file_menu = tk.Menu(menu_bar, tearoff=0)
-        menu_bar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Save Data", command=self.save_history)
         file_menu.add_command(label="Export Report", command=self.export_report)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
+        menu_bar.add_cascade(label="File", menu=file_menu)
         
-        # Create Tools menu
-        tools_menu = tk.Menu(menu_bar, tearoff=0)
-        menu_bar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Clear Today's Log", command=self.clear_today)
-        tools_menu.add_command(label="Delete All History", command=self.delete_history)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Food Statistics", command=self.show_stats)  # Changed from "Burger Statistics"
-        tools_menu.add_command(label="Weight Tracker", command=self.show_weight_tracker)  # Added menu item for weight tracking
-        tools_menu.add_command(label="Refresh Charts", command=self.generate_chart)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Manage Custom Database", command=self.manage_custom_database)
+        # Add Edit menu
+        edit_menu = tk.Menu(menu_bar, tearoff=0)
+        edit_menu.add_command(label="Clear Today", command=self.clear_today)
+        edit_menu.add_command(label="Clear All", command=self.clear_all)
+        edit_menu.add_command(label="Delete History", command=self.delete_history)
+        menu_bar.add_cascade(label="Edit", menu=edit_menu)
         
-        # Create View menu
+        # Add View menu with themes
         view_menu = tk.Menu(menu_bar, tearoff=0)
-        menu_bar.add_cascade(label="View", menu=view_menu)
         
         # Theme submenu
         theme_menu = tk.Menu(view_menu, tearoff=0)
-        view_menu.add_cascade(label="Themes", menu=theme_menu)
-        
-        themes = ["Draco", "Justin", "Mason", "William", "Chaka"]
-        for theme in themes:
+        for theme in self.theme_names:
             theme_menu.add_command(
                 label=theme.capitalize(),
                 command=lambda t=theme: self.change_theme(t)
             )
+        view_menu.add_cascade(label="Theme", menu=theme_menu)
+        menu_bar.add_cascade(label="View", menu=view_menu)
         
-        # Create Help menu
+        # Add Tools menu
+        tools_menu = tk.Menu(menu_bar, tearoff=0)
+        tools_menu.add_command(label="Show Stats", command=self.show_stats)
+        tools_menu.add_command(label="Show Weight Tracker", command=self.show_weight_tracker)
+        tools_menu.add_command(label="Manage Custom Database", command=self.manage_custom_database)
+        menu_bar.add_cascade(label="Tools", menu=tools_menu)
+        
+        # Add Help menu
         help_menu = tk.Menu(menu_bar, tearoff=0)
-        menu_bar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Guide", command=self.show_guide)
         help_menu.add_command(label="About", command=self.show_about)
-        help_menu.add_command(label="User Guide", command=self.show_guide)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+        
+        # Set the menu bar to the root window
+        self.root.config(menu=menu_bar)
     
     def change_theme(self, theme_name):
-        self.style = Style(theme=theme_name)
-        self.style.configure("TButton", font=("Roboto", 10))
-        self.style.configure("TLabel", font=("Roboto", 10))
-        self.status_var.set(f"Theme changed to {theme_name.capitalize()}")
+        """Apply theme change with optimized performance"""
+        # Set sv-ttk theme
+        sv_ttk.set_theme(theme_name)
+        
+        # Update status bar
+        self.status_var.set(f"Theme changed to {theme_name}")
+        
+        # Only regenerate chart if stats tab is visible
+        if hasattr(self, 'notebook') and self.notebook.index('current') == 3:
+            self.generate_chart()
     
     def export_report(self):
         filename = f"burger_report_{self.current_date}.txt"
@@ -1026,42 +1077,45 @@ class BurgerTracker:
         ).pack(pady=10)
     
     def generate_chart(self):
-        # Clear the current chart
-        if hasattr(self, 'canvas'):
+        """Generate charts with optimization"""
+        # Clear the current chart if it exists
+        if hasattr(self, 'canvas') and self.canvas:
             self.canvas.get_tk_widget().destroy()
+            plt.close('all')  # Close all existing matplotlib figures to prevent memory leaks
+            
+        # Create figure with optimized DPI settings
+        chart_type = self.chart_type.get()
+        fig = plt.figure(figsize=(10, 6), dpi=80)  # Lower DPI for better performance
         
-        # Create figure and axis
-        fig, ax = plt.subplots(figsize=(10, 6))
-        fig.patch.set_facecolor('#2b3e50')  # Match background
-        ax.set_facecolor('#2b3e50')
-        ax.tick_params(colors='white')  # White ticks
+        # Use tight_layout to optimize space
+        fig.tight_layout(pad=3.0)
         
-        # Set title text color to white
-        plt.rcParams['text.color'] = 'white'
-        plt.rcParams['axes.labelcolor'] = 'white'
-        plt.rcParams['xtick.color'] = 'white'
-        plt.rcParams['ytick.color'] = 'white'
+        # Create a single axis with optimized settings
+        ax = fig.add_subplot(111)
         
-        # Create the selected chart
-        selected_chart = self.chart_var.get()
-        
-        if selected_chart == "Weekly Calories":
+        # Create different charts based on selection
+        if chart_type == "weekly":
             self.create_weekly_chart(ax)
-        elif selected_chart == "Daily Distribution":
+        elif chart_type == "distribution":
             self.create_distribution_chart(ax)
-        elif selected_chart == "Food Types":
+        elif chart_type == "food_types":
             self.create_food_types_chart(ax)
-        elif selected_chart == "Calories In vs Out":
+        elif chart_type == "calories_io":
             self.create_calories_in_out_chart(ax)
-        elif selected_chart == "Weight Tracking":
+        elif chart_type == "weight":
             self.create_weight_tracking_chart(ax)
+        elif chart_type == "water":
+            self.create_water_tracking_chart(ax)
         
-        # Create canvas for chart
-        self.canvas = FigureCanvasTkAgg(fig, master=self.figure_frame)
+        # Create the canvas - use 'nearest' for faster image resampling
+        self.canvas = FigureCanvasTkAgg(fig, self.chart_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
-        # Update stats text
+        # Pack the canvas but use fill and expand for better layout performance
+        canvas_widget = self.canvas.get_tk_widget()
+        canvas_widget.pack(fill=tk.BOTH, expand=True)
+        
+        # Update stats once after chart is drawn
         self.update_stats_text()
     
     def create_weekly_chart(self, ax):
@@ -1249,64 +1303,64 @@ class BurgerTracker:
     
     def update_stats_text(self):
         # Calculate stats
-        total_days = len(self.history)
-        total_foods = sum(len(day_data.get("food", [])) for day_data in self.history.values())
-        total_exercises = sum(len(day_data.get("exercise", [])) for day_data in self.history.values())
         
-        # Calculate total calories consumed and burned
+        # Total tracking days
+        total_days = len(self.history)
+        
+        # Total items logged
+        food_entries = sum(len(data.get("food", [])) for data in self.history.values())
+        exercise_entries = sum(len(data.get("exercise", [])) for data in self.history.values())
+        water_entries = sum(len(data.get("water", [])) for data in self.history.values())
+        
+        # Total calories
         total_calories = 0
-        total_burned = 0
-        for day_data in self.history.values():
-            # Calculate consumed calories with Kyle Tax
-            for entry in day_data.get("food", []):
-                calories = entry["calories"]
+        total_burnt = 0
+        total_water = 0
+        
+        for date, data in self.history.items():
+            # Food calories
+            for entry in data.get("food", []):
+                calories = entry.get("calories", 0)
                 if entry.get("kyle_tax", False):
                     calories = int(calories * 0.85)
                 total_calories += calories
             
-            # Calculate burned calories
-            for exercise in day_data.get("exercise", []):
-                total_burned += exercise.get("calories_burnt", 0)
-        
-        # Get weight data
-        weights = []
-        for day_data in self.history.values():
-            weight = day_data.get("weight")
-            if weight is not None:
-                weights.append(weight)
-        
-        # Generate stats text
-        stats_text = f"Total days tracked: {total_days}\n"
-        stats_text += f"Total food entries: {total_foods}\n"
-        stats_text += f"Total exercise entries: {total_exercises}\n"
-        stats_text += f"Total calories consumed: {total_calories}\n"
-        stats_text += f"Total calories burned: {total_burned}\n"
-        stats_text += f"Net calories: {total_calories - total_burned}\n"
-        
-        # Add weight stats if available
-        if weights:
-            current_weight = weights[-1]
-            start_weight = weights[0]
-            weight_change = current_weight - start_weight
-            
-            stats_text += f"\nWeight Statistics:\n"
-            stats_text += f"Starting weight: {start_weight} lb\n"
-            stats_text += f"Current weight: {current_weight} lb\n"
-            stats_text += f"Weight change: {weight_change:+.1f} lb\n"
-            
-            if len(weights) >= 2:
-                avg_weight = sum(weights) / len(weights)
-                min_weight = min(weights)
-                max_weight = max(weights)
+            # Exercise calories
+            for entry in data.get("exercise", []):
+                total_burnt += entry.get("calories_burnt", 0)
                 
-                stats_text += f"Average weight: {avg_weight:.1f} lb\n"
-                stats_text += f"Minimum weight: {min_weight} lb\n"
-                stats_text += f"Maximum weight: {max_weight} lb\n"
+            # Water glasses
+            for entry in data.get("water", []):
+                total_water += entry.get("amount", 0)
         
-        # Update the text widget
+        # Format stats
         self.stats_text.config(state=tk.NORMAL)
         self.stats_text.delete(1.0, tk.END)
-        self.stats_text.insert(tk.END, stats_text)
+        
+        # Calculate averages
+        avg_daily_calories = total_calories / total_days if total_days > 0 else 0
+        avg_daily_burnt = total_burnt / total_days if total_days > 0 else 0
+        avg_daily_water = total_water / total_days if total_days > 0 else 0
+        
+        # Calculate net
+        net_calories = total_calories - total_burnt
+        
+        # Display stats
+        stats = f"""• Total Days Tracked: {total_days}
+• Total Food Items: {food_entries}
+• Total Exercises: {exercise_entries}
+• Total Water Entries: {water_entries}
+
+• Average Daily Calories: {avg_daily_calories:.1f}
+• Average Daily Calories Burnt: {avg_daily_burnt:.1f}
+• Average Daily Water: {avg_daily_water:.1f} glasses
+
+• Total Calories Consumed: {total_calories}
+• Total Calories Burnt: {total_burnt}
+• Net Calories: {net_calories}
+• Total Water: {total_water:.1f} glasses"""
+        
+        self.stats_text.insert(tk.END, stats)
         self.stats_text.config(state=tk.DISABLED)
     
     def get_day_data(self, date_str):
@@ -1315,7 +1369,7 @@ class BurgerTracker:
         if date_str == self.current_date and date_str not in self.history:
             return self.today_entries
         # Otherwise get from history
-        return self.history.get(date_str, {"food": [], "exercise": [], "weight": None})
+        return self.history.get(date_str, {"food": [], "exercise": [], "weight": None, "water": []})
     
     def load_history(self):
         # Load history from file
@@ -1357,6 +1411,7 @@ class BurgerTracker:
             self.date_var.set(new_date.strftime("%Y-%m-%d"))
             self.load_entries()
             self.load_exercises()  # Also load exercises for the new date
+            self.load_water_history()  # Also load water data for the new date
             
             # Also update weight data for the selected date
             if hasattr(self, 'weight_var'):
@@ -1382,6 +1437,7 @@ class BurgerTracker:
         # Load entries and exercises
         self.load_entries()
         self.load_exercises()  # Also load exercises
+        self.load_water_history()  # Also load water data
         
         # Also update weight data for today
         if hasattr(self, 'weight_var'):
@@ -1394,64 +1450,80 @@ class BurgerTracker:
                 self.weight_var.set("")
     
     def load_entries(self):
+        """Optimize loading entries into the treeview"""
         # Clear the treeview
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
-        # Get selected date
-        selected_date = self.date_var.get()
-        
-        # Get data for the selected date
-        day_data = self.get_day_data(selected_date)
+            
+        # Get entries for the selected date
+        day_data = self.get_day_data(self.date_var.get())
         food_entries = day_data.get("food", [])
+        
+        # Batch update with temporary detachment for better performance
+        self.tree.update_idletasks()
         
         # Add entries to treeview
         for entry in food_entries:
-            calories = entry["calories"]
-            kyle_tax_applied = entry.get("kyle_tax", False)
+            # Check if Kyle tax is applied
+            kyle_tax = "Yes" if entry.get("kyle_tax", False) or self.kyle_tax_enabled.get() else "No"
             
-            if kyle_tax_applied or self.kyle_tax_enabled.get():
-                adjusted_calories = int(calories * 0.85)
-                kyle_status = "Applied"
+            # Calculate calories with Kyle Tax if needed
+            calories = entry["calories"]
+            if kyle_tax == "Yes":
+                display_calories = int(calories * 0.85)
             else:
-                adjusted_calories = calories
-                kyle_status = "No"
+                display_calories = calories
                 
-            self.tree.insert("", "end", values=(
-                entry["food"],
-                entry["amount"],
-                entry.get("category", "Food"),  # Add category
-                adjusted_calories,
-                kyle_status
-            ))
-        
+            # Get category
+            category = entry.get("category", "Food")
+            
+            self.tree.insert(
+                "", 
+                "end", 
+                values=(
+                    entry["food"], 
+                    entry["amount"], 
+                    category,
+                    display_calories,
+                    kyle_tax
+                )
+            )
+            
         # Update totals
         self.update_totals()
+        
+        # Update status bar
+        self.status_var.set(f"Loaded entries for {self.date_var.get()}")
     
     def load_exercises(self):
+        """Optimize loading exercises into the treeview"""
         # Clear the exercise treeview
         for item in self.exercise_tree.get_children():
             self.exercise_tree.delete(item)
-        
-        # Get selected date
-        selected_date = self.date_var.get()
-        
-        # Get data for the selected date
-        day_data = self.get_day_data(selected_date)
+            
+        # Get entries for the selected date
+        day_data = self.get_day_data(self.date_var.get())
         exercise_entries = day_data.get("exercise", [])
         
-        # Add entries to treeview
-        for entry in exercise_entries:
-            self.exercise_tree.insert("", "end", values=(
-                entry["exercise"],
-                entry["duration"],
-                entry["calories_burnt"]
-            ))
+        # Batch update
+        self.exercise_tree.update_idletasks()
         
+        # Add entries to exercise treeview
+        for entry in exercise_entries:
+            self.exercise_tree.insert(
+                "", 
+                "end", 
+                values=(
+                    entry["exercise"], 
+                    entry["duration"], 
+                    entry["calories_burnt"]
+                )
+            )
+            
         # Update exercise summary
         self.update_exercise_summary(exercise_entries)
         
-        # Update the main tab totals as well (to reflect burnt calories)
+        # Update totals
         self.update_totals()
     
     def update_exercise_summary(self, exercises=None):
@@ -1506,13 +1578,22 @@ class BurgerTracker:
         progress_pct = min(100, (net_calories / goal) * 100)
         self.progress_var.set(progress_pct)
         
-        # Update progress bar color
+        # Update progress bar color - use default sv-ttk styling
         if progress_pct < 75:
-            self.progress_bar.configure(style="success.Horizontal.TProgressbar")
+            # Using default progressbar style
+            pass
         elif progress_pct < 100:
-            self.progress_bar.configure(style="warning.Horizontal.TProgressbar")
+            # Using default progressbar style
+            pass
         else:
-            self.progress_bar.configure(style="danger.Horizontal.TProgressbar")
+            # Using default progressbar style
+            pass
+    
+    def calculate_goal(self):
+        try:
+            return int(self.goal_var.get())
+        except ValueError:
+            return 2000
     
     def apply_kyle_tax(self):
         # Re-load entries to apply or remove Kyle Tax
@@ -2262,7 +2343,7 @@ class BurgerTracker:
         # About text
         about_text = ttk.Label(
             about_frame, 
-            text="Jacob Burger Tracker v1.5",  # Updated version
+            text="Jacob Burger Tracker v1.6",  # Updated version
             font=("Roboto", 16, "bold")
         )
         about_text.pack(pady=5)
@@ -2281,7 +2362,7 @@ class BurgerTracker:
         
         features_text = ttk.Label(
             features_frame,
-            text="• Modern UI\n• Track burgers, sides, and drinks\n• Exercise tracking\n• Kyle Tax\n• Calorie tracking\n• Data visualization\n• Custom food and exercise entries",
+            text="• Modern UI\n• Track burgers, sides, and drinks\n• Exercise tracking\n• Kyle Tax\n• Calorie tracking\n• Data visualization\n• Custom food and exercise entries\n• Water tracking",
             font=("Roboto", 10),
             justify="left"
         )
@@ -2919,70 +3000,86 @@ class BurgerTracker:
         plt.tight_layout()
     
     def on_window_resize(self, event):
-        # This method is called when the window is resized
-        # Update UI elements that need to be adjusted on resize
+        """Debounced resize handler to prevent excessive updates"""
+        # Only process events from the main window
+        if event.widget != self.root:
+            return
+            
+        # Cancel previous timer if it exists
+        if self.resize_timer is not None:
+            self.root.after_cancel(self.resize_timer)
+            
+        # Set a new timer for 150ms
+        self.resize_timer = self.root.after(150, lambda: self.update_ui_for_resize(event.width, event.height))
+    
+    def update_ui_for_resize(self, width, height):
+        """Apply UI updates after resize with optimized performance"""
+        # Scale font sizes based on window dimensions
+        base_size = min(max(int(width / 80), 8), 14)  # Limit font size between 8 and 14
         
-        # Check if the event is for the main window
-        if event.widget == self.root:
-            width = event.width
-            height = event.height
-            
-            # Scale font sizes based on window dimensions
-            base_size = min(max(int(width / 80), 8), 14)  # Limit font size between 8 and 14
-            
+        # Only update fonts if size changed
+        if hasattr(self, '_last_font_size') and self._last_font_size == base_size:
+            # Skip font updates if size hasn't changed
+            pass
+        else:
             # Update font configurations
-            self.style.configure("TButton", font=("Roboto", base_size))
-            self.style.configure("TLabel", font=("Roboto", base_size))
-            self.style.configure("Heading.TLabel", font=("Roboto", base_size + 2, "bold"))
+            style = ttk.Style()
+            style.configure("TButton", font=("Segoe UI", base_size))
+            style.configure("TLabel", font=("Segoe UI", base_size))
+            style.configure("Heading.TLabel", font=("Segoe UI", base_size + 2, "bold"))
+            self._last_font_size = base_size
+        
+        # Update tree column widths efficiently
+        if hasattr(self, 'tree'):
+            # Calculate proportional widths
+            food_width = int(width * 0.3)
+            quantity_width = int(width * 0.1)
+            category_width = int(width * 0.2)
+            calories_width = int(width * 0.15)
+            kyle_width = int(width * 0.15)
             
-            # Update tree column widths
-            if hasattr(self, 'tree'):
-                # Calculate proportional widths
-                food_width = int(width * 0.3)
-                quantity_width = int(width * 0.1)
-                category_width = int(width * 0.2)
-                calories_width = int(width * 0.15)
-                kyle_width = int(width * 0.15)
-                
-                self.tree.column("Food", width=food_width)
-                self.tree.column("Quantity", width=quantity_width)  # Changed from "Amount" to "Quantity"
-                self.tree.column("Category", width=category_width)
-                self.tree.column("Calories", width=calories_width)
-                self.tree.column("Kyle Tax", width=kyle_width)
+            self.tree.column("Food", width=food_width)
+            self.tree.column("Quantity", width=quantity_width)
+            self.tree.column("Category", width=category_width)
+            self.tree.column("Calories", width=calories_width)
+            self.tree.column("Kyle Tax", width=kyle_width)
+        
+        # Update exercise tree column widths
+        if hasattr(self, 'exercise_tree'):
+            exercise_width = int(width * 0.4)
+            duration_width = int(width * 0.2)
+            calories_burnt_width = int(width * 0.2)
             
-            # Update exercise tree column widths
-            if hasattr(self, 'exercise_tree'):
-                exercise_width = int(width * 0.4)
-                duration_width = int(width * 0.2)
-                calories_burnt_width = int(width * 0.2)
-                
-                self.exercise_tree.column("Exercise", width=exercise_width)
-                self.exercise_tree.column("Duration (min)", width=duration_width)
-                self.exercise_tree.column("Calories Burnt", width=calories_burnt_width)
+            self.exercise_tree.column("Exercise", width=exercise_width)
+            self.exercise_tree.column("Duration (min)", width=duration_width)
+            self.exercise_tree.column("Calories Burnt", width=calories_burnt_width)
+        
+        # Update weight tree column widths
+        if hasattr(self, 'weight_tree'):
+            date_width = int(width * 0.5)
+            weight_width = int(width * 0.4)
             
-            # Update weight tree column widths
-            if hasattr(self, 'weight_tree'):
-                date_width = int(width * 0.5)
-                weight_width = int(width * 0.4)
-                
-                self.weight_tree.column("Date", width=date_width)
-                self.weight_tree.column("Weight (lb)", width=weight_width)
-            
-            # Regenerate current chart if on stats tab
-            if hasattr(self, 'notebook') and self.notebook.index('current') == 3:  # Stats tab index
-                self.generate_chart()
+            self.weight_tree.column("Date", width=date_width)
+            self.weight_tree.column("Weight (lb)", width=weight_width)
+        
+        # Only regenerate charts if on stats tab to avoid unnecessary processing
+        if hasattr(self, 'notebook') and self.notebook.index('current') == 3:  # Stats tab index
+            self.generate_chart()
     
     def on_tab_changed(self, event):
         # Refresh the current tab's content when tab is changed
-        current_tab = self.notebook.index('current')
+        tab_id = self.notebook.select()
+        tab_name = self.notebook.tab(tab_id, "text")
         
-        if current_tab == 0:  # Daily Tracking
+        if tab_name == "Daily Tracking":
             self.load_entries()
-        elif current_tab == 1:  # Exercise Log
+        elif tab_name == "Exercise Log":
             self.load_exercises()
-        elif current_tab == 2:  # Weight Tracker
+        elif tab_name == "Weight Tracker":
             self.load_weight_history()
-        elif current_tab == 3:  # Statistics
+        elif tab_name == "Water Tracker":
+            self.load_water_history()
+        elif tab_name == "Statistics":
             self.generate_chart()
             self.update_stats_text()
     
@@ -2991,135 +3088,135 @@ class BurgerTracker:
         self.notebook.select(2)  # Index 2 is the weight tab
     
     def show_calendar(self, parent_widget):
+        """Optimized calendar implementation"""
+        # Check if calendar already exists and is visible
+        if hasattr(self, 'cal_window') and self.cal_window and self.cal_window.winfo_exists():
+            # Just raise existing calendar window
+            self.cal_window.focus_set()
+            return
+            
         # Create a toplevel window for the calendar
-        cal_window = tk.Toplevel(self.root)
-        cal_window.title("Select Date")
-        cal_window.geometry("300x320")
-        cal_window.resizable(False, False)
-        cal_window.transient(self.root)  # Make it transient to the main window
-        cal_window.grab_set()  # Modal dialog
+        self.cal_window = tk.Toplevel(self.root)
+        self.cal_window.title("Date Selector")
+        self.cal_window.geometry("320x300")
+        self.cal_window.resizable(False, False)
         
-        # Center window
-        cal_window.update_idletasks()
-        width = cal_window.winfo_width()
-        height = cal_window.winfo_height()
-        x = (cal_window.winfo_screenwidth() // 2) - (width // 2)
-        y = (cal_window.winfo_screenheight() // 2) - (height // 2)
-        cal_window.geometry(f"{width}x{height}+{x}+{y}")
+        # Apply the same theme
+        sv_ttk.set_theme(sv_ttk.get_theme())
         
-        # Get the current date from the date_var
+        # Make dialog modal
+        self.cal_window.transient(self.root)
+        self.cal_window.grab_set()
+        
+        # Parse the current date
         try:
             current_date = datetime.datetime.strptime(self.date_var.get(), "%Y-%m-%d")
         except ValueError:
             current_date = datetime.datetime.now()
-        
-        # Create variables to store selected date
+            
+        # Set calendar variables
         self.cal_year = tk.IntVar(value=current_date.year)
         self.cal_month = tk.IntVar(value=current_date.month)
         self.cal_day = tk.IntVar(value=current_date.day)
         
-        # Month and year selection
-        nav_frame = ttk.Frame(cal_window)
-        nav_frame.pack(fill="x", padx=10, pady=5)
+        # Create header frame
+        header_frame = ttk.Frame(self.cal_window)
+        header_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Previous month button
-        prev_btn = ttk.Button(
-            nav_frame, 
-            text="◀", 
-            width=2,
-            command=lambda: self.change_calendar_month(-1, cal_window)
+        # Navigation buttons with optimal spacing
+        ttk.Button(
+            header_frame, 
+            text="◄", 
+            width=3,
+            command=lambda: self.change_calendar_month(-1, self.cal_window)
+        ).pack(side=tk.LEFT, padx=2)
+        
+        # Month and year label in the center
+        self.month_year_label = ttk.Label(
+            header_frame, 
+            text=f"{calendar.month_name[self.cal_month.get()]} {self.cal_year.get()}",
+            font=("Segoe UI", 12)
         )
-        prev_btn.pack(side="left", padx=5)
+        self.month_year_label.pack(side=tk.LEFT, expand=True, padx=10)
         
-        # Month combo
-        months = [
-            "January", "February", "March", "April", "May", "June", 
-            "July", "August", "September", "October", "November", "December"
-        ]
-        month_combo = ttk.Combobox(
-            nav_frame, 
-            values=months, 
-            width=10, 
-            state="readonly",
-            textvariable=tk.StringVar(value=months[current_date.month-1])
-        )
-        month_combo.pack(side="left", padx=5)
-        month_combo.bind("<<ComboboxSelected>>", 
-                         lambda e: [self.cal_month.set(month_combo.current()+1), 
-                                    self.update_calendar_days(cal_window)])
+        ttk.Button(
+            header_frame, 
+            text="►", 
+            width=3,
+            command=lambda: self.change_calendar_month(1, self.cal_window)
+        ).pack(side=tk.RIGHT, padx=2)
         
-        # Year spinbox
-        year_spin = ttk.Spinbox(
-            nav_frame, 
-            from_=1900, 
-            to=2100, 
-            width=6,
-            textvariable=self.cal_year
-        )
-        year_spin.pack(side="left", padx=5)
-        year_spin.bind("<Return>", lambda e: self.update_calendar_days(cal_window))
+        # Weekday names, use abbreviated to save space
+        days_frame = ttk.Frame(self.cal_window)
+        days_frame.pack(fill=tk.X, padx=5)
         
-        # Next month button
-        next_btn = ttk.Button(
-            nav_frame, 
-            text="▶", 
-            width=2,
-            command=lambda: self.change_calendar_month(1, cal_window)
-        )
-        next_btn.pack(side="left", padx=5)
+        days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        for i, day in enumerate(days):
+            ttk.Label(
+                days_frame, 
+                text=day, 
+                width=5, 
+                anchor="center",
+                font=("Segoe UI", 9, "bold")
+            ).grid(row=0, column=i, padx=1, pady=1)
+            
+        # Days grid
+        self.days_frame = ttk.Frame(self.cal_window)
+        self.days_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Days of the week
-        days_frame = ttk.Frame(cal_window)
-        days_frame.pack(fill="x", padx=10, pady=2)
+        # Button frame at bottom
+        button_frame = ttk.Frame(self.cal_window)
+        button_frame.pack(fill=tk.X, padx=5, pady=10)
         
-        for i, day in enumerate(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]):
-            label = ttk.Label(days_frame, text=day, width=3, anchor="center")
-            label.grid(row=0, column=i, padx=1, pady=1)
-        
-        # Days frame where we'll add the day buttons
-        self.days_frame = ttk.Frame(cal_window)
-        self.days_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        # Update the calendar
-        self.update_calendar_days(cal_window)
-        
-        # Button frame
-        button_frame = ttk.Frame(cal_window)
-        button_frame.pack(fill="x", padx=10, pady=10)
-        
-        # Today button
         ttk.Button(
             button_frame, 
-            text="Today", 
+            text="Today",
             style="Info.TButton",
             command=lambda: [
-                self.cal_year.set(datetime.datetime.now().year),
-                self.cal_month.set(datetime.datetime.now().month),
                 self.cal_day.set(datetime.datetime.now().day),
-                self.update_calendar_days(cal_window)
+                self.cal_month.set(datetime.datetime.now().month),
+                self.cal_year.set(datetime.datetime.now().year),
+                self.update_calendar_days(self.cal_window),
+                self.update_selected_date(self.cal_window)
             ]
-        ).pack(side="left", padx=10)
+        ).pack(side=tk.LEFT, padx=5)
         
-        # Select button
         ttk.Button(
             button_frame, 
-            text="Select", 
+            text="Select",
             style="Success.TButton",
-            command=lambda: self.select_date_from_calendar(cal_window)
-        ).pack(side="right", padx=10)
+            command=lambda: self.select_date_from_calendar(self.cal_window)
+        ).pack(side=tk.RIGHT, padx=5)
         
-        # Cancel button
         ttk.Button(
             button_frame, 
-            text="Cancel", 
+            text="Cancel",
             style="Secondary.TButton",
-            command=cal_window.destroy
-        ).pack(side="right", padx=10)
+            command=self.cal_window.destroy
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        # Fill the calendar with days
+        self.update_calendar_days(self.cal_window)
+        
+        # Cleanup on window close
+        self.cal_window.protocol("WM_DELETE_WINDOW", lambda: self._cleanup_calendar())
+    
+    def _cleanup_calendar(self):
+        """Clean up calendar resources"""
+        if hasattr(self, 'cal_window') and self.cal_window:
+            self.cal_window.destroy()
+            self.cal_window = None
     
     def update_calendar_days(self, cal_window):
+        """Optimized calendar days rendering"""
+        # Store button references to prevent garbage collection
+        if not hasattr(self, 'day_buttons'):
+            self.day_buttons = []
+            
         # Clear existing day buttons
         for widget in self.days_frame.winfo_children():
             widget.destroy()
+        self.day_buttons = []
         
         # Get the number of days in the selected month
         year = self.cal_year.get()
@@ -3131,10 +3228,30 @@ class BurgerTracker:
         # Adjust for Sunday as first day of week (calendar.monthrange returns 0 for Monday)
         first_day = (first_day + 1) % 7
         
-        # Create day buttons
-        btn_style = ttk.Style()
-        btn_style.configure("Cal.TButton", font=("Roboto", 9))
+        # Update the month/year label
+        self.month_year_label.config(text=f"{calendar.month_name[month]} {year}")
         
+        # Create day buttons with minimal styling
+        btn_style = ttk.Style()
+        btn_style.configure("Cal.TButton", font=("Segoe UI", 9))
+        
+        # Cache today's date for comparison
+        today = datetime.datetime.now()
+        today_is_day = today.day
+        today_is_month = today.month
+        today_is_year = today.year
+        
+        # Cache selected date from data
+        selected_date = self.date_var.get()
+        try:
+            selected_parts = selected_date.split('-')
+            selected_year = int(selected_parts[0])
+            selected_month = int(selected_parts[1])
+            selected_day = int(selected_parts[2])
+        except (ValueError, IndexError):
+            selected_year, selected_month, selected_day = 0, 0, 0
+            
+        # Generate all buttons at once
         day = 1
         for row in range(6):  # 6 weeks max
             if day > num_days:
@@ -3143,8 +3260,8 @@ class BurgerTracker:
             for col in range(7):  # 7 days per week
                 if row == 0 and col < first_day:
                     # Empty cell before first day
-                    label = ttk.Label(self.days_frame, text="", width=3)
-                    label.grid(row=row, column=col, padx=1, pady=1)
+                    spacer = ttk.Label(self.days_frame, text="", width=3)
+                    spacer.grid(row=row, column=col, padx=1, pady=1)
                 elif day <= num_days:
                     # Create the day button
                     btn = ttk.Button(
@@ -3152,46 +3269,57 @@ class BurgerTracker:
                         text=str(day), 
                         width=3,
                         style="Cal.TButton",
-                        command=lambda d=day: [self.cal_day.set(d), self.select_date_from_calendar(cal_window)]
+                        command=lambda d=day: [
+                            self.cal_day.set(d), 
+                            self.update_selected_date(cal_window)
+                        ]
                     )
                     
+                    # Store reference
+                    self.day_buttons.append(btn)
+                    
                     # Highlight today
-                    today = datetime.datetime.now()
-                    if day == today.day and month == today.month and year == today.year:
-                        btn.configure(style="Accent.TButton")
+                    if day == today_is_day and month == today_is_month and year == today_is_year:
+                        btn.configure(style="Primary.TButton")
                     
-                    # Highlight selected day
-                    if day == self.cal_day.get() and month == self.cal_month.get() and year == self.cal_year.get():
-                        btn.configure(style="Accent.TButton")
-                    
+                    # Highlight selected day from calendar variables
+                    elif day == self.cal_day.get() and month == self.cal_month.get() and year == self.cal_year.get():
+                        btn.configure(style="Primary.TButton")
+                        
                     # Check if there's data for this date
                     date_str = f"{year}-{month:02d}-{day:02d}"
                     if date_str in self.history:
-                        has_data = False
-                        has_weight = False
-                        day_data = self.history[date_str]
+                        data = self.history[date_str]
+                        has_food = len(data.get("food", [])) > 0
+                        has_exercise = len(data.get("exercise", [])) > 0
                         
-                        if day_data.get("food") or day_data.get("exercise"):
-                            has_data = True
-                            
-                        if day_data.get("weight") is not None:
-                            has_weight = True
-                        
-                        if has_data and has_weight:
+                        if has_food and has_exercise:
+                            btn.configure(style="Success.TButton", text=f"{day}**")
+                        elif has_food:
                             btn.configure(style="Success.TButton", text=f"{day}*")
-                        elif has_data:
+                        elif has_exercise:
                             btn.configure(style="Info.TButton", text=f"{day}*")
-                        elif has_weight:
-                            btn.configure(style="Success.TButton")
                     
+                    # Check if it matches the originally selected date
+                    elif day == selected_day and month == selected_month and year == selected_year:
+                        btn.configure(style="Success.TButton")
+                        
                     btn.grid(row=row, column=col, padx=1, pady=1)
                     day += 1
+    
+    def update_selected_date(self, cal_window):
+        """Update the selected_date attribute in the calendar window."""
+        year = self.cal_year.get()
+        month = self.cal_month.get()
+        day = self.cal_day.get()
+        cal_window.selected_date = f"{year}-{month:02d}-{day:02d}"
     
     def change_calendar_month(self, delta, cal_window):
         # Update the month and year when navigating
         month = self.cal_month.get() + delta
         year = self.cal_year.get()
         
+        # Handle year change if needed
         if month < 1:
             month = 12
             year -= 1
@@ -3199,38 +3327,703 @@ class BurgerTracker:
             month = 1
             year += 1
         
+        # Update the variables
         self.cal_month.set(month)
         self.cal_year.set(year)
+        
+        # Make sure the day is valid in the new month
+        _, days_in_month = calendar.monthrange(year, month)
+        if self.cal_day.get() > days_in_month:
+            self.cal_day.set(days_in_month)
+        
+        # Update the calendar UI
         self.update_calendar_days(cal_window)
+        
+        # Update the selected_date attribute
+        self.update_selected_date(cal_window)
     
     def select_date_from_calendar(self, cal_window):
         # Get the selected date from our custom calendar
-        year = self.cal_year.get()
-        month = self.cal_month.get()
-        day = self.cal_day.get()
-        
-        # Format the date as YYYY-MM-DD
-        formatted_date = f"{year}-{month:02d}-{day:02d}"
-        
-        # Set the date variable
-        self.date_var.set(formatted_date)
-        
-        # Close the calendar window
-        cal_window.destroy()
-        
-        # Load entries for the selected date
-        self.load_entries()
-        self.load_exercises()
-        
-        # Update weight data if weight_var exists
-        if hasattr(self, 'weight_var'):
-            day_data = self.get_day_data(formatted_date)
-            current_weight = day_data.get("weight")
+        try:
+            selected_date = cal_window.selected_date
             
-            if current_weight is not None:
-                self.weight_var.set(str(current_weight))
-            else:
-                self.weight_var.set("")
+            # Set the date
+            self.date_var.set(selected_date)
+            
+            # Destroy the calendar window
+            cal_window.destroy()
+            
+            # Load entries for the new date
+            self.load_entries()
+            self.load_exercises()
+            self.load_water_history()
+            
+            # Also update weight data for the selected date
+            if hasattr(self, 'weight_var'):
+                day_data = self.get_day_data(selected_date)
+                current_weight = day_data.get("weight")
+                
+                if current_weight is not None:
+                    self.weight_var.set(str(current_weight))
+                else:
+                    self.weight_var.set("")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to select date: {e}")
+    
+    def setup_water_tab(self):
+        # Water tracking tab main container
+        water_frame = ttk.Frame(self.water_tab)
+        water_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Upper controls - same date selector as in tracking tab
+        control_frame = ttk.Frame(water_frame)
+        control_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        date_frame = ttk.LabelFrame(control_frame, text="Date Selection")
+        date_frame.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
+        
+        date_controls = ttk.Frame(date_frame)
+        date_controls.pack(padx=10, pady=10, fill=tk.X)
+        
+        ttk.Label(date_controls, text="Date:").pack(side=tk.LEFT, padx=5)
+        
+        # Use the same date variable as the main tab
+        date_entry = ttk.Entry(date_controls, textvariable=self.date_var, width=15)
+        date_entry.pack(side=tk.LEFT, padx=5)
+        # Bind double-click and Enter key to show calendar
+        date_entry.bind("<Double-1>", lambda e: self.show_calendar(date_entry))
+        date_entry.bind("<Return>", lambda e: self.load_water_history())
+        
+        # Calendar button with icon
+        cal_button = ttk.Button(
+            date_controls,
+            text="📅",  # Calendar emoji
+            width=2,
+            command=lambda: self.show_calendar(date_entry)
+        )
+        cal_button.pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(
+            date_controls, 
+            text="←", 
+            width=2,
+            style="Accent.TButton",
+            command=lambda: self.change_date(-1)
+        ).pack(side=tk.LEFT)
+        
+        ttk.Button(
+            date_controls, 
+            text="Today", 
+            style="Accent.TButton",
+            command=self.go_to_today
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            date_controls, 
+            text="→", 
+            width=2,
+            style="Accent.TButton",
+            command=lambda: self.change_date(1)
+        ).pack(side=tk.LEFT)
+        
+        # Goal setting frame
+        goal_frame = ttk.LabelFrame(control_frame, text="Daily Water Goal")
+        goal_frame.pack(side=tk.RIGHT, padx=5, pady=5, fill=tk.X, expand=True)
+        
+        goal_controls = ttk.Frame(goal_frame)
+        goal_controls.pack(padx=10, pady=10, fill=tk.X)
+        
+        ttk.Label(goal_controls, text="Goal (glasses):").pack(side=tk.LEFT, padx=5)
+        
+        water_goal_entry = ttk.Entry(goal_controls, textvariable=self.daily_water_goal, width=5)
+        water_goal_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            goal_controls, 
+            text="Set Goal", 
+            style="Accent.TButton",
+            command=self.set_water_goal
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Add separator between controls and water tracking
+        ttk.Separator(water_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
+        # Add water tracking UI
+        tracking_frame = ttk.Frame(water_frame)
+        tracking_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        # Quick add buttons
+        quick_add_frame = ttk.LabelFrame(tracking_frame, text="Quick Add Water")
+        quick_add_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        quick_buttons_frame = ttk.Frame(quick_add_frame)
+        quick_buttons_frame.pack(padx=10, pady=10, fill=tk.X)
+        
+        # Create a row of water glass buttons for quick adding
+        for amount in [1, 2, 3]:
+            btn = ttk.Button(
+                quick_buttons_frame,
+                text=f"{amount} Glass{'es' if amount > 1 else ''}",
+                style="Info.TButton",
+                command=lambda a=amount: self.add_water(a)
+            )
+            btn.pack(side=tk.LEFT, padx=5)
+        
+        # Custom amount entry
+        custom_frame = ttk.Frame(quick_buttons_frame)
+        custom_frame.pack(side=tk.LEFT, padx=20)
+        
+        ttk.Label(custom_frame, text="Custom:").pack(side=tk.LEFT, padx=5)
+        
+        self.custom_water_var = tk.StringVar(value="1")
+        custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_water_var, width=5)
+        custom_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            custom_frame,
+            text="Add",
+            style="Success.TButton",
+            command=self.add_custom_water
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Add separator between quick add and history
+        ttk.Separator(water_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
+        # Water progress visualization
+        progress_frame = ttk.LabelFrame(water_frame, text="Today's Progress")
+        progress_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        # Create a frame for the glasses visualization
+        self.glasses_frame = ttk.Frame(progress_frame)
+        self.glasses_frame.pack(padx=10, pady=10, fill=tk.X)
+        
+        # Progress bar for water intake
+        self.water_progress_var = tk.DoubleVar(value=0)
+        progress_bar_frame = ttk.Frame(progress_frame)
+        progress_bar_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(progress_bar_frame, text="Progress:").pack(side=tk.LEFT, padx=5)
+        
+        self.water_progress_bar = ttk.Progressbar(
+            progress_bar_frame,
+            orient="horizontal",
+            length=300,
+            mode="determinate",
+            variable=self.water_progress_var,
+            style="info.Horizontal.TProgressbar"
+        )
+        self.water_progress_bar.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        
+        # Summary labels
+        self.water_summary_var = tk.StringVar(value="0 / 8 glasses consumed")
+        self.water_percentage_var = tk.StringVar(value="0% of daily goal")
+        
+        summary_frame = ttk.Frame(progress_frame)
+        summary_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(
+            summary_frame,
+            textvariable=self.water_summary_var,
+            font=("Segoe UI", 12, "bold")
+        ).pack(side=tk.LEFT, padx=10)
+        
+        ttk.Label(
+            summary_frame,
+            textvariable=self.water_percentage_var,
+            font=("Segoe UI", 12, "bold"),
+            foreground="#5bc0de"  # Info blue color
+        ).pack(side=tk.RIGHT, padx=10)
+        
+        # Add separator between progress and history
+        ttk.Separator(water_frame, orient='horizontal').pack(fill='x', padx=5, pady=5)
+        
+        # History section
+        history_frame = ttk.LabelFrame(water_frame, text="Water Intake History")
+        history_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=10)
+        
+        # Create treeview for water entries
+        columns = ("Time", "Amount (glasses)", "Notes")
+        self.water_tree = ttk.Treeview(history_frame, columns=columns, show="headings", style="Treeview")
+        
+        # Define headings
+        for col in columns:
+            self.water_tree.heading(col, text=col)
+        
+        self.water_tree.column("Time", width=100)
+        self.water_tree.column("Amount (glasses)", width=120)
+        self.water_tree.column("Notes", width=200)
+        
+        # Add scrollbar
+        water_scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.water_tree.yview)
+        self.water_tree.configure(yscrollcommand=water_scrollbar.set)
+        
+        self.water_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        water_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Button frame for water history
+        water_button_frame = ttk.Frame(water_frame)
+        water_button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Button(
+            water_button_frame,
+            text="Delete Selected",
+            style="Danger.TButton",
+            command=self.delete_water
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            water_button_frame,
+            text="Clear All",
+            style="Warning.TButton",
+            command=self.clear_all_water
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            water_button_frame,
+            text="Add with Notes",
+            style="Success.TButton",
+            command=self.add_water_with_notes
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        # Load water history
+        self.load_water_history()
+    
+    def set_water_goal(self):
+        try:
+            goal = int(self.daily_water_goal.get())
+            if goal <= 0:
+                messagebox.showerror("Error", "Goal must be a positive number")
+                return
+                
+            # Update the progress display
+            self.update_water_progress()
+            
+            # Update status
+            self.status_var.set(f"Water goal set to {goal} glasses")
+            
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid number")
+    
+    def add_water(self, amount):
+        # Add water entry with current time
+        current_time = datetime.datetime.now().strftime("%H:%M")
+        
+        # Get selected date
+        selected_date = self.date_var.get()
+        
+        # Create a new water entry
+        water_entry = {
+            "time": current_time,
+            "amount": amount,
+            "notes": ""
+        }
+        
+        # Get the day data
+        day_data = self.get_day_data(selected_date)
+        
+        # Initialize water list if not present
+        if "water" not in day_data:
+            day_data["water"] = []
+        
+        # Add the entry
+        day_data["water"].append(water_entry)
+        
+        # Update history
+        self.history[selected_date] = day_data
+        
+        # If it's today, update today_entries
+        if selected_date == self.current_date:
+            self.today_entries = day_data
+        
+        # Save to file
+        self.save_history()
+        
+        # Refresh the water history
+        self.load_water_history()
+        
+        # Update status
+        self.status_var.set(f"Added {amount} glass{'es' if amount > 1 else ''} of water")
+    
+    def add_custom_water(self):
+        try:
+            amount = float(self.custom_water_var.get())
+            if amount <= 0:
+                messagebox.showerror("Error", "Amount must be a positive number")
+                return
+                
+            self.add_water(amount)
+            
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid number")
+    
+    def add_water_with_notes(self):
+        # Create a dialog for adding water with notes
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Water with Notes")
+        dialog.geometry("400x250")
+        dialog.resizable(False, False)
+        
+        # Apply the same theme
+        dialog.tk.call("source", "azure.tcl")
+        dialog.tk.call("set_theme", sv_ttk.get_theme())
+        
+        # Make dialog modal
+        dialog.grab_set()
+        dialog.focus_set()
+        
+        # Amount frame
+        amount_frame = ttk.Frame(dialog, padding=10)
+        amount_frame.pack(fill=tk.X)
+        
+        ttk.Label(amount_frame, text="Amount (glasses):").pack(side=tk.LEFT, padx=5)
+        
+        amount_var = tk.StringVar(value="1")
+        amount_entry = ttk.Entry(amount_frame, textvariable=amount_var, width=5)
+        amount_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Notes frame
+        notes_frame = ttk.Frame(dialog, padding=10)
+        notes_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(notes_frame, text="Notes:").pack(anchor=tk.W, padx=5)
+        
+        notes_var = tk.StringVar()
+        notes_entry = ttk.Entry(notes_frame, textvariable=notes_var, width=40)
+        notes_entry.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Suggestions frame
+        suggestions_frame = ttk.LabelFrame(dialog, text="Quick Notes", padding=10)
+        suggestions_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Common notes suggestions
+        suggestions = ["Morning hydration", "With meal", "After workout", "Before bed"]
+        
+        for suggestion in suggestions:
+            btn = ttk.Button(
+                suggestions_frame,
+                text=suggestion,
+                command=lambda s=suggestion: notes_var.set(s)
+            )
+            btn.pack(side=tk.LEFT, padx=5)
+        
+        # Button frame
+        button_frame = ttk.Frame(dialog, padding=10)
+        button_frame.pack(fill=tk.X)
+        
+        def save_water_entry():
+            try:
+                amount = float(amount_var.get())
+                notes = notes_var.get()
+                
+                if amount <= 0:
+                    messagebox.showerror("Error", "Amount must be a positive number")
+                    return
+                
+                # Current time
+                current_time = datetime.datetime.now().strftime("%H:%M")
+                
+                # Get selected date
+                selected_date = self.date_var.get()
+                
+                # Create the water entry
+                water_entry = {
+                    "time": current_time,
+                    "amount": amount,
+                    "notes": notes
+                }
+                
+                # Get the day data
+                day_data = self.get_day_data(selected_date)
+                
+                # Initialize water list if not present
+                if "water" not in day_data:
+                    day_data["water"] = []
+                
+                # Add the entry
+                day_data["water"].append(water_entry)
+                
+                # Update history
+                self.history[selected_date] = day_data
+                
+                # If it's today, update today_entries
+                if selected_date == self.current_date:
+                    self.today_entries = day_data
+                
+                # Save to file
+                self.save_history()
+                
+                # Close the dialog
+                dialog.destroy()
+                
+                # Refresh the water history
+                self.load_water_history()
+                
+                # Update status
+                self.status_var.set(f"Added {amount} glass{'es' if amount > 1 else ''} of water with notes")
+                
+            except ValueError:
+                messagebox.showerror("Error", "Please enter a valid number for amount")
+        
+        ttk.Button(
+            button_frame,
+            text="Cancel",
+            style="Secondary.TButton",
+            command=dialog.destroy
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Button(
+            button_frame,
+            text="Save",
+            style="Success.TButton",
+            command=save_water_entry
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        # Center the dialog on the screen
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+    
+    def delete_water(self):
+        # Get selected item
+        selected = self.water_tree.selection()
+        if not selected:
+            messagebox.showinfo("Info", "Please select a water entry to delete")
+            return
+        
+        # Ask for confirmation
+        if not messagebox.askyesno("Confirm", "Delete selected water entry?"):
+            return
+        
+        # Get the selected date
+        selected_date = self.date_var.get()
+        day_data = self.get_day_data(selected_date)
+        
+        # Get the index to delete (based on the row selection)
+        idx = self.water_tree.index(selected[0])
+        
+        # Remove the entry
+        if 0 <= idx < len(day_data.get("water", [])):
+            day_data["water"].pop(idx)
+            
+            # Update history
+            self.history[selected_date] = day_data
+            
+            # If it's today, update today_entries
+            if selected_date == self.current_date:
+                self.today_entries = day_data
+            
+            # Save to file
+            self.save_history()
+            
+            # Refresh the display
+            self.load_water_history()
+            
+            # Update status
+            self.status_var.set("Water entry deleted")
+        else:
+            messagebox.showerror("Error", "Failed to delete entry")
+    
+    def clear_all_water(self):
+        # Ask for confirmation
+        if not messagebox.askyesno("Confirm", "Clear all water entries for this date?"):
+            return
+        
+        # Get the selected date
+        selected_date = self.date_var.get()
+        day_data = self.get_day_data(selected_date)
+        
+        # Clear water entries
+        day_data["water"] = []
+        
+        # Update history
+        self.history[selected_date] = day_data
+        
+        # If it's today, update today_entries
+        if selected_date == self.current_date:
+            self.today_entries = day_data
+        
+        # Save to file
+        self.save_history()
+        
+        # Refresh the display
+        self.load_water_history()
+        
+        # Update status
+        self.status_var.set("All water entries cleared")
+    
+    def load_water_history(self):
+        """Optimize loading water history"""
+        # Clear the water treeview
+        for item in self.water_tree.get_children():
+            self.water_tree.delete(item)
+            
+        # Batch update
+        self.water_tree.update_idletasks()
+        
+        # Get entries for the selected date
+        day_data = self.get_day_data(self.date_var.get())
+        water_entries = day_data.get("water", [])
+        
+        # Add entries to treeview
+        for entry in water_entries:
+            self.water_tree.insert(
+                "", 
+                "end", 
+                values=(
+                    entry["time"], 
+                    entry["amount"], 
+                    entry.get("notes", "")
+                )
+            )
+        
+        # Update water progress
+        self.update_water_progress()
+    
+    def update_water_progress(self):
+        # Get selected date
+        selected_date = self.date_var.get()
+        
+        # Get data for the selected date
+        day_data = self.get_day_data(selected_date)
+        water_entries = day_data.get("water", [])
+        
+        # Calculate total glasses
+        total_glasses = sum(entry["amount"] for entry in water_entries)
+        
+        # Get the goal
+        try:
+            goal = int(self.daily_water_goal.get())
+        except ValueError:
+            goal = 8  # Default goal
+        
+        # Calculate percentage
+        percentage = min(100, (total_glasses / goal * 100) if goal > 0 else 0)
+        
+        # Update the progress bar
+        self.water_progress_var.set(percentage)
+        
+        # Update summary text
+        self.water_summary_var.set(f"{total_glasses:.1f} / {goal} glasses consumed")
+        self.water_percentage_var.set(f"{percentage:.1f}% of daily goal")
+        
+        # Update the glasses visualization
+        self.update_glasses_visualization(total_glasses, goal)
+    
+    def update_glasses_visualization(self, total, goal):
+        # Clear the glasses frame
+        for widget in self.glasses_frame.winfo_children():
+            widget.destroy()
+        
+        # Calculate how many full and empty glasses to show
+        full_glasses = int(total)
+        partial_glass = total - full_glasses
+        empty_glasses = max(0, goal - full_glasses - (1 if partial_glass > 0 else 0))
+        
+        # Create full glasses
+        for i in range(full_glasses):
+            if i < 10:  # Only show max 10 to prevent overflow
+                ttk.Label(self.glasses_frame, text="🥛", font=("Segoe UI Emoji", 24)).pack(side=tk.LEFT, padx=2)
+        
+        # Create partial glass if needed
+        if partial_glass > 0 and full_glasses < 10:
+            ttk.Label(self.glasses_frame, text="🥛", font=("Segoe UI Emoji", 20)).pack(side=tk.LEFT, padx=2)
+        
+        # Create empty glasses
+        for i in range(empty_glasses):
+            if full_glasses + i < 10:  # Only show max 10 to prevent overflow
+                ttk.Label(self.glasses_frame, text="⚪", font=("Segoe UI Emoji", 24)).pack(side=tk.LEFT, padx=2)
+    
+    def create_water_tracking_chart(self, ax):
+        # Get water entries from the last 7 days
+        today = datetime.datetime.now().date()
+        dates = []
+        water_amounts = []
+        
+        for i in range(6, -1, -1):  # Last 7 days, from oldest to newest
+            date = today - datetime.timedelta(days=i)
+            date_str = date.strftime("%Y-%m-%d")
+            dates.append(date.strftime("%m-%d"))  # Short date format for x-axis
+            
+            # Get water data for this date
+            day_data = self.get_day_data(date_str)
+            water_entries = day_data.get("water", [])
+            
+            # Sum all water intake for this day
+            total_water = sum(entry["amount"] for entry in water_entries)
+            water_amounts.append(total_water)
+        
+        # Plot the water intake
+        bars = ax.bar(dates, water_amounts, color='#5bc0de')
+        
+        # Add data labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width()/2., 
+                height + 0.1, 
+                f'{height:.1f}', 
+                ha='center', 
+                va='bottom',
+                color='white'
+            )
+        
+        # Get the goal for reference line
+        try:
+            goal = int(self.daily_water_goal.get())
+        except ValueError:
+            goal = 8  # Default goal
+        
+        # Add a horizontal line for the daily goal
+        ax.axhline(y=goal, color='r', linestyle='--', alpha=0.7, label=f'Daily Goal ({goal} glasses)')
+        
+        # Add labels and title
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Glasses of Water')
+        ax.set_title('Water Intake - Last 7 Days')
+        
+        # Add legend
+        ax.legend()
+        
+        # Set y-axis to start at 0
+        ax.set_ylim(bottom=0)
+        
+        # Adjust grid for better readability
+        ax.grid(axis='y', alpha=0.3)
+    
+    def _initialize_theme(self):
+        """Initialize sv-ttk theme settings once at startup"""
+        # Apply sv-ttk theme
+        sv_ttk.set_theme("dark")
+        
+        # Preload both themes to avoid lag when switching
+        self.root.after(100, lambda: sv_ttk.set_theme("light"))
+        self.root.after(200, lambda: sv_ttk.set_theme("dark"))
+        
+        # Cache for chart data to avoid frequent recomputation
+        self._chart_cache = {}
+        
+        # Optimize matplotlib for better performance
+        plt.rcParams['figure.dpi'] = 80
+        plt.rcParams['savefig.dpi'] = 80
+        plt.rcParams['path.simplify'] = True
+        plt.rcParams['path.simplify_threshold'] = 1.0
+        plt.rcParams['agg.path.chunksize'] = 10000
+    
+    def change_theme(self, theme_name):
+        """Apply theme change with optimized performance"""
+        # Set sv-ttk theme
+        sv_ttk.set_theme(theme_name)
+        
+        # Update status bar
+        self.status_var.set(f"Theme changed to {theme_name}")
+        
+        # Only regenerate chart if stats tab is visible
+        if hasattr(self, 'notebook') and self.notebook.index('current') == 3:
+            self.generate_chart()
     
 # Run the application
 if __name__ == "__main__":
