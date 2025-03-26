@@ -4,4 +4,4 @@ Jacob Burger is a state of the art burger tracker with enhanced features such as
 
 # Requirements
 
-pip install ttkbootstrap matplotlib customtkinter sv-ttk
+pip install ttkbootstrap matplotlib customtkinter
